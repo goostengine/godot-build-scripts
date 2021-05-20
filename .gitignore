@@ -15,3 +15,6 @@ releases/
 sha512sums/
 tmp/
 web/
+
+# Modules
+/custom_modules

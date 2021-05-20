@@ -4,6 +4,13 @@ set -e
 
 OPTIND=1
 
+if [ -f /etc/selinux/config ] && [ $(getenforce) == "Enforcing" ]; then
+  echo "Cannot build with SELinux status set to Enforcing."
+  echo "Please set SELinux status to Permissive with:"
+  echo "    sudo setenforce 0"
+  exit 1
+fi
+
 # Config
 
 # For default registry and number of cores.
@@ -19,6 +26,10 @@ fi
 
 if [ -z "${NUM_CORES}" ]; then
   export NUM_CORES=16
+fi
+
+if [ -z "${SCONSFLAGS}" ]; then
+  export SCONSFLAGS="custom_modules=/root/custom_modules"
 fi
 
 registry="${REGISTRY}"
@@ -135,38 +146,16 @@ if [ $skip_download == 0 ]; then
   fi
 fi
 
-if [ "${skip_git_checkout}" == 0 ]; then
-  git clone https://github.com/godotengine/godot git || /bin/true
-  pushd git
-  git checkout -b ${git_treeish} origin/${git_treeish} || git checkout ${git_treeish}
-  git reset --hard
-  git clean -fdx
-  git pull origin ${git_treeish} || /bin/true
-
-  # Validate version
-  correct_version=$(python3 << EOF
-import version;
-if hasattr(version, "patch") and version.patch != 0:
-  git_version = f"{version.major}.{version.minor}.{version.patch}-{version.status}"
-else:
-  git_version = f"{version.major}.{version.minor}-{version.status}"
-print(git_version == "${godot_version}")
-EOF
-  )
-  if [[ "$correct_version" != "True" ]]; then
-    echo "Version in version.py doesn't match the passed ${godot_version}."
-    exit 0
-  fi
-
-  git archive --format=tar $git_treeish --prefix=godot-${godot_version}/ | gzip > ../godot.tar.gz
-  popd
-fi
+pushd git
+echo "Creating godot.tar.gz"
+tar --exclude-vcs -czf ../godot.tar.gz .
+popd
 
 export basedir="$(pwd)"
 mkdir -p ${basedir}/out
 mkdir -p ${basedir}/out/logs
 
-export podman_run="${podman} run -it --rm --env BUILD_NAME --env NUM_CORES --env CLASSICAL=${build_classical} --env MONO=${build_mono} -v ${basedir}/godot.tar.gz:/root/godot.tar.gz -v ${basedir}/mono-glue:/root/mono-glue -w /root/"
+export podman_run="${podman} run -it --rm --env BUILD_NAME --env NUM_CORES --env CLASSICAL=${build_classical} --env MONO=${build_mono} --env SCONSFLAGS -v ${basedir}/godot.tar.gz:/root/godot.tar.gz -v ${basedir}/mono-glue:/root/mono-glue -w /root/ -v ${basedir}/custom_modules:/root/custom_modules"
 export img_version=3.x-mono-6.12.0.122
 
 # Get AOT compilers from their containers.
@@ -201,8 +190,8 @@ ${podman_run} -v ${basedir}/build-ios:/root/build -v ${basedir}/out/ios:/root/ou
 mkdir -p ${basedir}/out/server/x64
 ${podman_run} -v ${basedir}/build-server:/root/build -v ${basedir}/out/server/x64:/root/out localhost/godot-ubuntu-64:${img_version} bash build/build.sh 2>&1 | tee ${basedir}/out/logs/server
 
-mkdir -p ${basedir}/out/uwp
-${podman_run} --ulimit nofile=32768:32768 -v ${basedir}/build-uwp:/root/build -v ${basedir}/out/uwp:/root/out ${registry}/godot-private/uwp:latest bash build/build.sh 2>&1 | tee ${basedir}/out/logs/uwp
+# mkdir -p ${basedir}/out/uwp
+# ${podman_run} --ulimit nofile=32768:32768 -v ${basedir}/build-uwp:/root/build -v ${basedir}/out/uwp:/root/out localhost/godot-msvc:${img_version} bash build/build.sh 2>&1 | tee ${basedir}/out/logs/uwp
 
 if [ ! -z "$SUDO_UID" ]; then
   chown -R "${SUDO_UID}":"${SUDO_GID}" ${basedir}/out ${basedir}/mono-glue ${basedir}/godot.tar.gz
